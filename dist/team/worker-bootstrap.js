@@ -1,6 +1,13 @@
 import { mkdir, writeFile, appendFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { sanitizePromptContent } from '../agents/prompt-helpers.js';
+export function generateTriggerMessage(teamName, workerName) {
+    return `Read and follow the instructions in .omc/state/team/${teamName}/workers/${workerName}/inbox.md`;
+}
+export function generateMailboxTriggerMessage(teamName, workerName, count = 1) {
+    const normalizedCount = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
+    return `You have ${normalizedCount} new message(s). Check .omc/state/team/${teamName}/mailbox/${workerName}.json`;
+}
 function agentTypeGuidance(agentType) {
     switch (agentType) {
         case 'codex':

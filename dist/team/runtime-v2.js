@@ -26,7 +26,8 @@ import { inferPhase } from './phase-controller.js';
 import { validateTeamName } from './team-name.js';
 import { buildWorkerArgv, resolveValidatedBinaryPath, getWorkerEnv as getModelWorkerEnv, isPromptModeAgent, getPromptModeArgs, } from './model-contract.js';
 import { createTeamSession, spawnWorkerInPane, sendToWorker, waitForPaneReady, } from './tmux-session.js';
-import { composeInitialInbox, ensureWorkerStateDir, writeWorkerOverlay, } from './worker-bootstrap.js';
+import { composeInitialInbox, ensureWorkerStateDir, writeWorkerOverlay, generateTriggerMessage, } from './worker-bootstrap.js';
+import { queueInboxInstruction } from './mcp-comm.js';
 // ---------------------------------------------------------------------------
 // Feature flag
 // ---------------------------------------------------------------------------
@@ -90,6 +91,12 @@ function buildV2TaskInstruction(teamName, workerName, task, taskId) {
 // ---------------------------------------------------------------------------
 // V2 worker spawning — direct tmux pane creation, no v1 delegation
 // ---------------------------------------------------------------------------
+async function notifyStartupInbox(sessionName, paneId, message) {
+    const notified = await notifyPaneWithRetry(sessionName, paneId, message);
+    return notified
+        ? { ok: true, transport: 'tmux_send_keys', reason: 'worker_pane_notified' }
+        : { ok: false, transport: 'tmux_send_keys', reason: 'worker_notify_failed' };
+}
 async function notifyPaneWithRetry(sessionName, paneId, message, maxAttempts = 6, retryDelayMs = 350) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (await sendToWorker(sessionName, paneId, message)) {
@@ -125,8 +132,11 @@ async function spawnV2Worker(opts) {
     const usePromptMode = isPromptModeAgent(opts.agentType);
     // Build v2 task instruction (CLI API, NO done.json)
     const instruction = buildV2TaskInstruction(opts.teamName, opts.workerName, opts.task, opts.taskId);
-    await composeInitialInbox(opts.teamName, opts.workerName, instruction, opts.cwd);
     const relInboxPath = `.omc/state/team/${opts.teamName}/workers/${opts.workerName}/inbox.md`;
+    const inboxTriggerMessage = generateTriggerMessage(opts.teamName, opts.workerName);
+    if (usePromptMode) {
+        await composeInitialInbox(opts.teamName, opts.workerName, instruction, opts.cwd);
+    }
     // Build env and launch command
     const envVars = getModelWorkerEnv(opts.teamName, opts.workerName, opts.agentType);
     const resolvedBinaryPath = opts.resolvedBinaryPaths[opts.agentType]
@@ -173,7 +183,7 @@ async function spawnV2Worker(opts) {
         ]);
     }
     catch { /* layout is best-effort */ }
-    // For interactive agents, wait for pane readiness then send inbox path
+    // For interactive agents, wait for pane readiness before dispatching startup inbox.
     if (!usePromptMode) {
         const paneReady = await waitForPaneReady(paneId);
         if (!paneReady) {
@@ -183,27 +193,41 @@ async function spawnV2Worker(opts) {
             catch { /* best-effort cleanup */ }
             return null;
         }
-        // Handle gemini trust-confirm
-        if (opts.agentType === 'gemini') {
-            const confirmed = await notifyPaneWithRetry(opts.sessionName, paneId, '1');
-            if (!confirmed) {
-                try {
-                    await execFileAsync('tmux', ['kill-pane', '-t', paneId]);
+    }
+    const dispatchOutcome = await queueInboxInstruction({
+        teamName: opts.teamName,
+        workerName: opts.workerName,
+        workerIndex: opts.workerIndex + 1,
+        paneId,
+        inbox: instruction,
+        triggerMessage: inboxTriggerMessage,
+        cwd: opts.cwd,
+        transportPreference: usePromptMode ? 'prompt_stdin' : 'transport_direct',
+        fallbackAllowed: false,
+        inboxCorrelationKey: `startup:${opts.workerName}:${opts.taskId}`,
+        notify: async (_target, triggerMessage) => {
+            if (usePromptMode) {
+                return { ok: true, transport: 'prompt_stdin', reason: 'prompt_mode_launch_args' };
+            }
+            if (opts.agentType === 'gemini') {
+                const confirmed = await notifyPaneWithRetry(opts.sessionName, paneId, '1');
+                if (!confirmed) {
+                    return { ok: false, transport: 'tmux_send_keys', reason: 'worker_notify_failed:trust-confirm' };
                 }
-                catch { /* best-effort cleanup */ }
-                return null;
+                await new Promise(r => setTimeout(r, 800));
             }
-            await new Promise(r => setTimeout(r, 800));
+            return notifyStartupInbox(opts.sessionName, paneId, triggerMessage);
+        },
+        deps: {
+            writeWorkerInbox,
+        },
+    });
+    if (!dispatchOutcome.ok) {
+        try {
+            await execFileAsync('tmux', ['kill-pane', '-t', paneId]);
         }
-        // Send inbox path to worker
-        const notified = await notifyPaneWithRetry(opts.sessionName, paneId, `Read and execute your task from: ${relInboxPath}`);
-        if (!notified) {
-            try {
-                await execFileAsync('tmux', ['kill-pane', '-t', paneId]);
-            }
-            catch { /* best-effort cleanup */ }
-            return null;
-        }
+        catch { /* best-effort cleanup */ }
+        return null;
     }
     return paneId;
 }

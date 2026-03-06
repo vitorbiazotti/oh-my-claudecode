@@ -64,8 +64,12 @@ import {
   waitForPaneReady, type WorkerPaneConfig,
 } from './tmux-session.js';
 import {
-  composeInitialInbox, ensureWorkerStateDir, writeWorkerOverlay,
+  composeInitialInbox,
+  ensureWorkerStateDir,
+  writeWorkerOverlay,
+  generateTriggerMessage,
 } from './worker-bootstrap.js';
+import { queueInboxInstruction, type DispatchOutcome } from './mcp-comm.js';
 
 // ---------------------------------------------------------------------------
 // Feature flag
@@ -221,6 +225,18 @@ function buildV2TaskInstruction(
 // V2 worker spawning — direct tmux pane creation, no v1 delegation
 // ---------------------------------------------------------------------------
 
+
+async function notifyStartupInbox(
+  sessionName: string,
+  paneId: string,
+  message: string,
+): Promise<DispatchOutcome> {
+  const notified = await notifyPaneWithRetry(sessionName, paneId, message);
+  return notified
+    ? { ok: true, transport: 'tmux_send_keys', reason: 'worker_pane_notified' }
+    : { ok: false, transport: 'tmux_send_keys', reason: 'worker_notify_failed' };
+}
+
 async function notifyPaneWithRetry(
   sessionName: string,
   paneId: string,
@@ -282,8 +298,11 @@ async function spawnV2Worker(opts: SpawnV2WorkerOptions): Promise<string | null>
   const instruction = buildV2TaskInstruction(
     opts.teamName, opts.workerName, opts.task, opts.taskId,
   );
-  await composeInitialInbox(opts.teamName, opts.workerName, instruction, opts.cwd);
   const relInboxPath = `.omc/state/team/${opts.teamName}/workers/${opts.workerName}/inbox.md`;
+  const inboxTriggerMessage = generateTriggerMessage(opts.teamName, opts.workerName);
+  if (usePromptMode) {
+    await composeInitialInbox(opts.teamName, opts.workerName, instruction, opts.cwd);
+  }
 
   // Build env and launch command
   const envVars = getModelWorkerEnv(opts.teamName, opts.workerName, opts.agentType);
@@ -339,33 +358,46 @@ async function spawnV2Worker(opts: SpawnV2WorkerOptions): Promise<string | null>
     ]);
   } catch { /* layout is best-effort */ }
 
-  // For interactive agents, wait for pane readiness then send inbox path
+  // For interactive agents, wait for pane readiness before dispatching startup inbox.
   if (!usePromptMode) {
     const paneReady = await waitForPaneReady(paneId);
     if (!paneReady) {
       try { await execFileAsync('tmux', ['kill-pane', '-t', paneId]); } catch { /* best-effort cleanup */ }
       return null;
     }
+  }
 
-    // Handle gemini trust-confirm
-    if (opts.agentType === 'gemini') {
-      const confirmed = await notifyPaneWithRetry(opts.sessionName, paneId, '1');
-      if (!confirmed) {
-        try { await execFileAsync('tmux', ['kill-pane', '-t', paneId]); } catch { /* best-effort cleanup */ }
-        return null;
+  const dispatchOutcome = await queueInboxInstruction({
+    teamName: opts.teamName,
+    workerName: opts.workerName,
+    workerIndex: opts.workerIndex + 1,
+    paneId,
+    inbox: instruction,
+    triggerMessage: inboxTriggerMessage,
+    cwd: opts.cwd,
+    transportPreference: usePromptMode ? 'prompt_stdin' : 'transport_direct',
+    fallbackAllowed: false,
+    inboxCorrelationKey: `startup:${opts.workerName}:${opts.taskId}`,
+    notify: async (_target, triggerMessage) => {
+      if (usePromptMode) {
+        return { ok: true, transport: 'prompt_stdin', reason: 'prompt_mode_launch_args' };
       }
-      await new Promise(r => setTimeout(r, 800));
-    }
-
-    // Send inbox path to worker
-    const notified = await notifyPaneWithRetry(
-      opts.sessionName, paneId,
-      `Read and execute your task from: ${relInboxPath}`,
-    );
-    if (!notified) {
-      try { await execFileAsync('tmux', ['kill-pane', '-t', paneId]); } catch { /* best-effort cleanup */ }
-      return null;
-    }
+      if (opts.agentType === 'gemini') {
+        const confirmed = await notifyPaneWithRetry(opts.sessionName, paneId, '1');
+        if (!confirmed) {
+          return { ok: false, transport: 'tmux_send_keys', reason: 'worker_notify_failed:trust-confirm' };
+        }
+        await new Promise(r => setTimeout(r, 800));
+      }
+      return notifyStartupInbox(opts.sessionName, paneId, triggerMessage);
+    },
+    deps: {
+      writeWorkerInbox,
+    },
+  });
+  if (!dispatchOutcome.ok) {
+    try { await execFileAsync('tmux', ['kill-pane', '-t', paneId]); } catch { /* best-effort cleanup */ }
+    return null;
   }
 
   return paneId;

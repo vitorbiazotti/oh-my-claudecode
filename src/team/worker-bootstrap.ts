@@ -12,6 +12,15 @@ export interface WorkerBootstrapParams {
   cwd: string;
 }
 
+export function generateTriggerMessage(teamName: string, workerName: string): string {
+  return `Read and follow the instructions in .omc/state/team/${teamName}/workers/${workerName}/inbox.md`;
+}
+
+export function generateMailboxTriggerMessage(teamName: string, workerName: string, count = 1): string {
+  const normalizedCount = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
+  return `You have ${normalizedCount} new message(s). Check .omc/state/team/${teamName}/mailbox/${workerName}.json`;
+}
+
 function agentTypeGuidance(agentType: CliAgentType): string {
   switch (agentType) {
     case 'codex':

@@ -303,14 +303,124 @@ describe('team cli', () => {
         expect(out.pid).toBe(5151);
         logSpy.mockRestore();
     });
+    it('team api legacy facade delegates send-message to canonical mailbox state', async () => {
+        const { teamCommand } = await import('../team.js');
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const cwd = mkdtempSync(join(tmpdir(), 'omc-team-cli-send-'));
+        const root = join(cwd, '.omc', 'state', 'team', 'api-team');
+        mkdirSync(join(root, 'tasks'), { recursive: true });
+        mkdirSync(join(root, 'mailbox'), { recursive: true });
+        writeFileSync(join(root, 'config.json'), JSON.stringify({
+            name: 'api-team',
+            task: 'api',
+            agent_type: 'executor',
+            worker_count: 1,
+            max_workers: 20,
+            tmux_session: 'legacy-session',
+            workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
+            created_at: new Date().toISOString(),
+            next_task_id: 2,
+            leader_pane_id: null,
+            hud_pane_id: null,
+            resize_hook_name: null,
+            resize_hook_target: null,
+        }));
+        await teamCommand([
+            'api',
+            'send-message',
+            '--input',
+            JSON.stringify({ teamName: 'api-team', fromWorker: 'worker-1', toWorker: 'leader-fixed', body: 'ACK' }),
+            '--json',
+            '--cwd',
+            cwd,
+        ]);
+        const payload = JSON.parse(logSpy.mock.calls[0][0]);
+        expect(payload.ok).toBe(true);
+        expect(payload.data.message.body).toBe('ACK');
+        expect(payload.data.message.to_worker).toBe('leader-fixed');
+        const mailbox = JSON.parse(readFileSync(join(root, 'mailbox', 'leader-fixed.json'), 'utf-8'));
+        expect(mailbox.messages).toHaveLength(1);
+        expect(mailbox.messages[0]?.body).toBe('ACK');
+        rmSync(cwd, { recursive: true, force: true });
+        logSpy.mockRestore();
+    });
+    it('team api legacy facade supports mailbox-mark-notified through canonical semantics', async () => {
+        const { teamCommand } = await import('../team.js');
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const cwd = mkdtempSync(join(tmpdir(), 'omc-team-cli-notified-'));
+        const root = join(cwd, '.omc', 'state', 'team', 'api-team');
+        mkdirSync(join(root, 'mailbox'), { recursive: true });
+        writeFileSync(join(root, 'config.json'), JSON.stringify({
+            name: 'api-team',
+            task: 'api',
+            agent_type: 'executor',
+            worker_count: 1,
+            max_workers: 20,
+            tmux_session: 'legacy-session',
+            workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
+            created_at: new Date().toISOString(),
+            next_task_id: 2,
+            leader_pane_id: null,
+            hud_pane_id: null,
+            resize_hook_name: null,
+            resize_hook_target: null,
+        }));
+        writeFileSync(join(root, 'mailbox', 'worker-1.json'), JSON.stringify({
+            worker: 'worker-1',
+            messages: [{
+                    message_id: 'msg-1',
+                    from_worker: 'leader-fixed',
+                    to_worker: 'worker-1',
+                    body: 'hello',
+                    created_at: new Date().toISOString(),
+                }],
+        }));
+        await teamCommand([
+            'api',
+            'mailbox-mark-notified',
+            '--input',
+            JSON.stringify({ teamName: 'api-team', workerName: 'worker-1', messageId: 'msg-1' }),
+            '--json',
+            '--cwd',
+            cwd,
+        ]);
+        const payload = JSON.parse(logSpy.mock.calls[0][0]);
+        expect(payload.ok).toBe(true);
+        expect(payload.data.notified).toBe(true);
+        const mailbox = JSON.parse(readFileSync(join(root, 'mailbox', 'worker-1.json'), 'utf-8'));
+        expect(typeof mailbox.messages[0]?.notified_at).toBe('string');
+        rmSync(cwd, { recursive: true, force: true });
+        logSpy.mockRestore();
+    });
     it('team api supports list-tasks and read-config', async () => {
         const { teamCommand } = await import('../team.js');
         const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const cwd = mkdtempSync(join(tmpdir(), 'omc-team-cli-api-'));
         const root = join(cwd, '.omc', 'state', 'team', 'api-team');
         mkdirSync(join(root, 'tasks'), { recursive: true });
-        writeFileSync(join(root, 'tasks', '1.json'), JSON.stringify({ id: '1', status: 'pending' }));
-        writeFileSync(join(root, 'config.json'), JSON.stringify({ teamName: 'api-team', workerCount: 1 }));
+        writeFileSync(join(root, 'tasks', 'task-1.json'), JSON.stringify({
+            id: '1',
+            subject: 'Legacy facade task',
+            description: 'canonical task fixture',
+            status: 'pending',
+            created_at: new Date().toISOString(),
+        }));
+        writeFileSync(join(root, 'config.json'), JSON.stringify({
+            name: 'api-team',
+            task: 'api',
+            agent_type: 'executor',
+            worker_launch_mode: 'interactive',
+            worker_count: 1,
+            max_workers: 20,
+            workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
+            created_at: new Date().toISOString(),
+            tmux_session: 'legacy-session',
+            next_task_id: 2,
+            leader_pane_id: null,
+            hud_pane_id: null,
+            resize_hook_name: null,
+            resize_hook_target: null,
+        }));
         await teamCommand(['api', 'list-tasks', '--input', JSON.stringify({ teamName: 'api-team' }), '--json', '--cwd', cwd]);
         const listPayload = JSON.parse(logSpy.mock.calls[0][0]);
         expect(listPayload.ok).toBe(true);
@@ -318,7 +428,7 @@ describe('team cli', () => {
         await teamCommand(['api', 'read-config', '--input', JSON.stringify({ teamName: 'api-team' }), '--json', '--cwd', cwd]);
         const configPayload = JSON.parse(logSpy.mock.calls[1][0]);
         expect(configPayload.ok).toBe(true);
-        expect(configPayload.data.config.workerCount).toBe(1);
+        expect(configPayload.data.config.worker_count).toBe(1);
         rmSync(cwd, { recursive: true, force: true });
         logSpy.mockRestore();
     });
