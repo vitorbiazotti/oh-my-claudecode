@@ -112,6 +112,16 @@ Jumping into code without understanding requirements leads to rework, scope cree
    - **Approve and execute via ralph**: **MUST** invoke `Skill("oh-my-claudecode:ralph")` with the approved plan path from `.omc/plans/` as context. Do NOT implement directly. Do NOT edit source code files in the planning agent. The ralph skill handles execution via ultrawork parallel agents.
    - **Clear context and implement**: First invoke `Skill("compact")` to compress the context window (reduces token usage accumulated during planning), then invoke `Skill("oh-my-claudecode:ralph")` with the approved plan path from `.omc/plans/`. This path is recommended when the context window is 50%+ full after the planning session.
 
+
+**Ralplan Mode-State Lifecycle (required for stop-hook cleanup)**
+- On entering consensus mode, **MUST** mark ralplan active for the current session via `state_write(mode="ralplan", active=true, current_phase="ralplan", started_at=..., session_id=...)` if that state is not already active.
+- Before **every terminal exit** from consensus mode, **MUST** retire that state for the current session:
+  - Final approved plan output in non-interactive mode -> `state_write(mode="ralplan", active=false, current_phase="complete", completed_at=..., session_id=...)`
+  - Interactive approval handoff to `team`, `ralph`, or `compact -> ralph` -> the same terminal `state_write(...)` **before** invoking the next skill
+  - Max-iteration exhaustion without consensus -> `state_write(mode="ralplan", active=false, current_phase="failed", completed_at=..., session_id=...)`
+  - User reject / explicit stop of planning -> `state_write(mode="ralplan", active=false, current_phase="cancelled", completed_at=..., session_id=...)` or `state_clear(mode="ralplan", session_id=...)` during cancel cleanup
+- Do **not** leave `ralplan-state.json` active after consensus planning ends; the persistent-mode stop hook treats active non-terminal ralplan state as in-progress work and will keep blocking stop.
+
 ### Review Mode (`--review`)
 
 1. Read plan file from `.omc/plans/`

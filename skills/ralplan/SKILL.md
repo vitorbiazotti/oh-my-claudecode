@@ -58,6 +58,8 @@ The consensus workflow:
 
 > **Important:** Steps 3 and 4 MUST run sequentially. Do NOT issue both agent Task calls in the same parallel batch. Always await the Architect result before issuing the Critic Task.
 
+> **Important:** Ralplan uses first-class persistent-mode stop-hook enforcement. On entering consensus mode, mark ralplan active for the current session via `state_write(mode="ralplan", active=true, current_phase="ralplan", started_at=..., session_id=...)` if needed. Before every terminal exit (final non-interactive output, interactive handoff to `team`/`ralph`, max-iteration exhaustion, reject/cancel), retire that state via terminal `state_write(...)` (`complete` / `failed` / `cancelled` with `completed_at`) or `state_clear(mode="ralplan", session_id=...)` during cancel cleanup. Do **not** leave `ralplan-state.json` active after consensus planning ends, or the persistent-mode stop hook will continue blocking stop.
+
 Follow the Plan skill's full documentation for consensus mode details.
 
 ## Pre-Execution Gate

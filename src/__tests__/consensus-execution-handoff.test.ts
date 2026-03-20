@@ -159,6 +159,19 @@ describe('Issue #595: Consensus mode execution handoff', () => {
       expect(consensusSection).toContain('expanded test plan');
       expect(consensusSection).toContain('unit / integration / e2e / observability');
     });
+
+    it('should require writing ralplan state on consensus entry and retiring it on terminal exits', () => {
+      const skill = getBuiltinSkill('omc-plan');
+      expect(skill).toBeDefined();
+
+      const consensusSection = extractSection(skill!.template, 'Consensus Mode');
+      expect(consensusSection).toBeDefined();
+      expect(consensusSection).toContain('state_write(mode="ralplan", active=true, current_phase="ralplan"');
+      expect(consensusSection).toContain('state_write(mode="ralplan", active=false, current_phase="complete"');
+      expect(consensusSection).toContain('state_write(mode="ralplan", active=false, current_phase="failed"');
+      expect(consensusSection).toContain('state_write(mode="ralplan", active=false, current_phase="cancelled"');
+      expect(consensusSection).toContain('state_clear(mode="ralplan", session_id=...)');
+    });
   });
 
   describe('Issue #600: User feedback step between Planner and Architect/Critic', () => {

@@ -56,6 +56,19 @@ describe('deep-interview provider-aware execution recommendations', () => {
     expect(ralplanSkill?.template).toContain('--critic codex');
   });
 
+
+  it('documents ralplan terminal state retirement so stop-hook protection does not leak', () => {
+    const planSkill = getBuiltinSkill('omc-plan');
+    const ralplanSkill = getBuiltinSkill('ralplan');
+
+    expect(planSkill?.template).toContain('state_write(mode="ralplan", active=false, current_phase="complete"');
+    expect(planSkill?.template).toContain('Do **not** leave `ralplan-state.json` active after consensus planning ends');
+
+    expect(ralplanSkill?.template).toContain('state_write(mode="ralplan", active=true, current_phase="ralplan"');
+    expect(ralplanSkill?.template).toContain('state_clear(mode="ralplan", session_id=...)');
+    expect(ralplanSkill?.template).toContain('persistent-mode stop hook will continue blocking stop');
+  });
+
   it('renders no extra runtime guidance when no provider-specific deep-interview variant is available', () => {
     expect(renderSkillRuntimeGuidance('deep-interview')).toBe('');
   });
