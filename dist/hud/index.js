@@ -5,7 +5,7 @@
  * Statusline command that visualizes oh-my-claudecode state.
  * Receives stdin JSON from Claude Code and outputs formatted statusline.
  */
-import { readStdin, writeStdinCache, readStdinCache, getContextPercent, getModelName } from "./stdin.js";
+import { readStdin, writeStdinCache, readStdinCache, getContextPercent, getModelName, stabilizeContextPercent, } from "./stdin.js";
 import { parseTranscript } from "./transcript.js";
 import { readHudState, readHudConfig, getRunningTasks, writeHudState, initializeHUDState, } from "./state.js";
 import { readRalphStateForHud, readUltraworkStateForHud, readPrdStateForHud, readAutopilotStateForHud, } from "./omc-state.js";
@@ -101,14 +101,16 @@ async function main(watchMode = false, skipInit = false) {
             await initializeHUDState();
         }
         // Read stdin from Claude Code
+        const previousStdinCache = readStdinCache();
         let stdin = await readStdin();
         if (stdin) {
+            stdin = stabilizeContextPercent(stdin, previousStdinCache);
             // Persist for --watch mode so it can read data when stdin is a TTY
             writeStdinCache(stdin);
         }
         else if (watchMode) {
             // In watch mode stdin is always a TTY; fall back to last cached value
-            stdin = readStdinCache();
+            stdin = previousStdinCache;
             if (!stdin) {
                 // Cache not yet populated (first poll before statusline fires)
                 console.log("[OMC] Starting...");
@@ -216,9 +218,10 @@ async function main(watchMode = false, skipInit = false) {
         const missionBoard = missionBoardEnabled
             ? await refreshMissionBoardState(cwd, config.missionBoard)
             : null;
+        const contextPercent = getContextPercent(stdin);
         // Build render context
         const context = {
-            contextPercent: getContextPercent(stdin),
+            contextPercent,
             modelName: getModelName(stdin),
             ralph,
             ultrawork,
@@ -234,7 +237,7 @@ async function main(watchMode = false, skipInit = false) {
             customBuckets,
             pendingPermission: transcriptData.pendingPermission || null,
             thinkingState: transcriptData.thinkingState || null,
-            sessionHealth: await calculateSessionHealth(sessionStart, getContextPercent(stdin)),
+            sessionHealth: await calculateSessionHealth(sessionStart, contextPercent),
             lastRequestTokenUsage: transcriptData.lastRequestTokenUsage || null,
             sessionTotalTokens: transcriptData.sessionTotalTokens ?? null,
             omcVersion,

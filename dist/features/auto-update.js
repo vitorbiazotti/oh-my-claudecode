@@ -9,10 +9,10 @@
  * - Store version metadata for installed components
  * - Configurable update notifications
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { execSync, execFileSync } from 'child_process';
-import { install as installOmc, HOOKS_DIR, isProjectScopedPlugin, isRunningAsPlugin } from '../installer/index.js';
+import { install as installOmc, HOOKS_DIR, isProjectScopedPlugin, isRunningAsPlugin, getInstalledOmcPluginRoots, getRuntimePackageRoot, } from '../installer/index.js';
 import { getConfigDir } from '../utils/config-dir.js';
 import { purgeStalePluginCacheVersions } from '../utils/paths.js';
 /** GitHub repository information */
@@ -99,6 +99,55 @@ function syncMarketplaceClone(verbose = false) {
         return { ok: false, message: `Failed to fast-forward marketplace clone: ${err instanceof Error ? err.message : err}` };
     }
     return { ok: true, message: 'Marketplace clone updated' };
+}
+const PLUGIN_SYNC_PAYLOAD = [
+    'dist',
+    'bridge',
+    'hooks',
+    'scripts',
+    'skills',
+    'agents',
+    'templates',
+    'docs',
+    '.claude-plugin',
+    '.mcp.json',
+    'README.md',
+    'LICENSE',
+    'package.json',
+];
+function syncActivePluginCache() {
+    const activeRoots = getInstalledOmcPluginRoots().filter(root => existsSync(root));
+    if (activeRoots.length === 0) {
+        return { synced: false, errors: [] };
+    }
+    const sourceRoot = getRuntimePackageRoot();
+    let synced = false;
+    const errors = [];
+    for (const targetRoot of activeRoots) {
+        let copiedToTarget = false;
+        for (const entry of PLUGIN_SYNC_PAYLOAD) {
+            const sourcePath = join(sourceRoot, entry);
+            if (!existsSync(sourcePath)) {
+                continue;
+            }
+            try {
+                cpSync(sourcePath, join(targetRoot, entry), {
+                    recursive: true,
+                    force: true,
+                });
+                copiedToTarget = true;
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                errors.push(`Failed to sync ${entry} to ${targetRoot}: ${message}`);
+            }
+        }
+        synced = synced || copiedToTarget;
+    }
+    if (synced) {
+        console.log('[omc update] Synced plugin cache');
+    }
+    return { synced, errors };
 }
 /** Installation paths (respects CLAUDE_CONFIG_DIR env var) */
 export const CLAUDE_CONFIG_DIR = getConfigDir();
@@ -339,6 +388,20 @@ export function reconcileUpdateRuntime(options) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`Failed to refresh installer artifacts: ${message}`);
     }
+    try {
+        const pluginSyncResult = syncActivePluginCache();
+        if (pluginSyncResult.errors.length > 0 && options?.verbose) {
+            for (const err of pluginSyncResult.errors) {
+                console.warn(`[omc] Plugin cache sync warning: ${err}`);
+            }
+        }
+    }
+    catch (error) {
+        if (options?.verbose) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn(`[omc] Plugin cache sync warning: ${message}`);
+        }
+    }
     // Purge stale plugin cache versions (non-fatal)
     try {
         const purgeResult = purgeStalePluginCacheVersions({ skipGracePeriod: options?.skipGracePeriod });
@@ -438,7 +501,7 @@ export async function performUpdate(options) {
                         stdio: options?.verbose ? 'inherit' : 'pipe',
                         timeout: 60000,
                         env: { ...process.env, OMC_UPDATE_RECONCILE: '1' },
-                        ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+                        ...(process.platform === 'win32' ? { windowsHide: true, shell: true } : {}),
                     });
                 }
                 catch (reconcileError) {

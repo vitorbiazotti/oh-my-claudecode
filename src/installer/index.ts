@@ -362,7 +362,7 @@ function directoryHasMarkdownFiles(directory: string): boolean {
   }
 }
 
-function getInstalledOmcPluginRoots(): string[] {
+export function getInstalledOmcPluginRoots(): string[] {
   const pluginRoots = new Set<string>();
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT?.trim();
 
@@ -430,6 +430,10 @@ function getPackageDir(): string {
     // import.meta.url unavailable — last resort
     return process.cwd();
   }
+}
+
+export function getRuntimePackageRoot(): string {
+  return getPackageDir();
 }
 
 /**
