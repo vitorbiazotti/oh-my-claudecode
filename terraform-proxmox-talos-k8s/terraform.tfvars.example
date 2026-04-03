@@ -1,0 +1,16 @@
+proxmox_endpoint  = "https://192.168.88.82:8006/"
+proxmox_api_token = "root@pam!tokentest=49980f05-1787-41d5-9f20-c952b71e17af"
+
+# Configuração sugerida para o cluster
+cluster_name        = "talos-proxmox-k8s"
+cluster_endpoint    = "192.168.88.50" # VIP ou IP do primeiro Control Plane
+node_name           = "pve"
+
+control_plane_count = 3
+worker_count        = 3
+
+enable_metallb      = true
+metallb_ip_range    = "192.168.88.200-192.168.88.250"
+enable_longhorn     = true
+enable_argocd       = true
+enable_prometheus   = true
